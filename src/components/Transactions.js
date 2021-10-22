@@ -98,6 +98,8 @@ const Transactions = (props) => {
     const [transactionsRows, setTransactionsRows] = useState([]);
     const { isInitialized} = useMoralis();
     const [checkedCurrentPrice, setCheckedCurrentPrice] = useState(false);
+    const [ourLocalMoralisAddresses, setOurLocalMoralisAddresses] = useState([]);
+    const [isAddressBookChanged, setIsAddressBookChanged] = useState(false);
     const {
         currentPage,
         setCurrentPage,
@@ -127,6 +129,12 @@ const Transactions = (props) => {
         const results = await queryTxDetails.find();  
         return results
       }
+      const queryAddressBookFromMoralis = async (address) => {
+        const queryAddressBook = new Moralis.Query("AddressBook");
+        queryAddressBook.equalTo("address", address);
+        const results = await queryAddressBook.find();  
+        return results
+      }
     
       const updateInMoralis = async (txId, description) => {
         const TxDetails = Moralis.Object.extend("TxDetails");
@@ -148,6 +156,26 @@ const Transactions = (props) => {
           });
         }
       };
+      const updateAddressInMoralis = async (address, addressName) => {
+        const AddressBook = Moralis.Object.extend("AddressBook");
+        const results = await queryAddressBookFromMoralis(address);
+        console.log("results",results)
+        if (results.length !== 0) {
+          const objectId = results[0].id;
+          const query = new Moralis.Query(AddressBook);
+          const addressBook = await query.get(objectId);
+          addressBook.set({
+            addressName: addressName,
+          });
+          addressBook.save();
+        } else {
+          const addressBook = new AddressBook();
+          await addressBook.save({
+            address: address,
+            addressName: addressName,
+          });
+        }
+      };
     
       useEffect(() => {
         if (isInitialized) {
@@ -164,8 +192,27 @@ const Transactions = (props) => {
               console.log("ourTxDetails ", ourTxDetails);
             })
             .catch((err) => console.log(err));
+
         }
-      }, [isInitialized])
+      }, [isInitialized,isAddressBookChanged])
+
+      useEffect(() => {
+        if (isInitialized) {
+          const queryAddressBook = new Moralis.Query("AddressBook");
+          let addressMap = new Map();
+          queryAddressBook
+            .find()
+            .then((result) => {
+              for (let i = 0; i < result.length; i++) {
+                const eachResult = result[i];
+                addressMap.set(eachResult.get("address"), eachResult);
+              }
+              setOurLocalMoralisAddresses(addressMap)
+              console.log("addressMap ", addressMap);
+            })
+            .catch((err) => console.log(err));
+        }
+      }, [isInitialized,isAddressBookChanged])
     
       useEffect(() => {    
           fetchTransactions(walletAddress, pageSize, offset, props.chain)
@@ -173,7 +220,6 @@ const Transactions = (props) => {
               if(jsonRes !== undefined){
 
                 //call getERC20Transfers - return a list of transfer transactions. 
-                // fetchTokenTransfers(walletAddress,pageSize,offset,props.chain)
                 fetchTokenTransfers(walletAddress,props.chain)
                 .then((mapOfTokenTransfers) => {
                   console.log("mapOfTokenTransfers",mapOfTokenTransfers)
@@ -185,22 +231,13 @@ const Transactions = (props) => {
               } 
             })
             .catch((error) => console.error("App =>", error));
-        }, [currentPage, pageSize, offset, walletAddress, checkedCurrentPrice]);
+        }, [currentPage, pageSize, offset, walletAddress, checkedCurrentPrice,isAddressBookChanged]);
     
     
       const getTransactionsRows = async (jsonRes,mapOfTokenTransfers) => {
         const transactions = [];
         let gasUsed;
     
-        // const options = {
-        //   address: props.tokenPair,
-        //   chain: props.chain,
-        //   block_number: 145
-        // };
-        // const price = await Moralis.Web3API.token.getTokenPrice(options);
-        // const toUsd = price.usdPrice;
-        // setToUsdPrice(toUsd);
-
         const currentPrice = await getTokenPrice(props.tokenPair,props.chain)
         setToUsdPrice(currentPrice);
 
@@ -228,14 +265,16 @@ const Transactions = (props) => {
             { pad: true }
           );
 
-          const priceAtTxTime = await getTokenPrice(props.tokenPair,props.chain,tx.block_number)
-        
-          if(tx.tokenValue!==undefined){
-          console.log("tx.tokenValue",tx.tokenValue);
-          // console.log('priceAtTxTime',priceAtTxTime)
-          console.log('currentPrice',currentPrice); //ethers.utils.parseUnits(
-          console.log('ethers.utils.parseUnits ',ethers.utils.formatEther(new BN(currentPrice,18).mul(new BN(tx.tokenValue,18)).toString()))
-          }
+          const ethPriceAtTxTime = await getTokenPrice(props.tokenPair,props.chain,tx.block_number)
+          const tokenPrice = (tx.metadata !== undefined) ? (await getTokenPrice(tx.metadata.address,props.chain)):0
+          const tokenPriceAtTxTime  = (tx.metadata !== undefined) ? (await getTokenPrice(tx.metadata.address,props.chain,tx.block_number)) : 0
+
+          const newTokenPrice = tokenPrice.toFixed(2)
+          const newTokenPriceAtTxTime = tokenPriceAtTxTime.toFixed(2)
+          const newTokenValue = parseInt(tx.tokenValue?tx.tokenValue:0)
+          console.log("newTokenPriceAtTxTime",newTokenPriceAtTxTime);
+          console.log("newTokenPrice",newTokenPrice);
+          console.log("newTokenValue",newTokenValue);
           
           transactions.push(
             <Tr key={index}>
@@ -266,10 +305,49 @@ const Transactions = (props) => {
                 />
               </Editable>
               </Td>
-              <Td>{tx.from_address}</Td>
-              <Td>{tx.to_address}</Td>
+
+              {/*<Td>{tx.from_address}</Td>*/}
+              <Td><Editable
+              defaultValue={
+                ourLocalMoralisAddresses.get(tx.from_address) !== undefined
+                  ? ourLocalMoralisAddresses.get(tx.from_address).attributes.addressName
+                  : tx.from_address
+              }
+            >
+              <EditablePreview />
+              <EditableInput
+                onBlur={async (e) => {
+                  await updateAddressInMoralis(tx.from_address, e.target.value);
+                  const newMap = ourLocalMoralisAddresses;
+                  newMap.set(tx.from_address, e.target.value);
+                  setOurLocalMoralisAddresses(newMap);
+                  setIsAddressBookChanged(!isAddressBookChanged)
+                }}
+              />
+            </Editable></Td>
+
+            {/*<Td>{tx.to_address}</Td>*/}
+            <Td><Editable
+              defaultValue={
+                ourLocalMoralisAddresses.get(tx.to_address) !== undefined
+                  ? ourLocalMoralisAddresses.get(tx.to_address).attributes.addressName
+                  : tx.to_address
+              }
+            >
+              <EditablePreview />
+              <EditableInput
+                onBlur={async (e) => {
+                  await updateAddressInMoralis(tx.to_address, e.target.value);
+                  const newMap = ourLocalMoralisAddresses;
+                  newMap.set(tx.to_address, e.target.value);
+                  setOurLocalMoralisAddresses(newMap);
+                  setIsAddressBookChanged(!isAddressBookChanged)
+                }}
+              />
+            </Editable></Td>
+
               <Td isNumeric>{gasUsed}</Td>
-              <Td isNumeric>{checkedCurrentPrice? (gasUsed * currentPrice) : (gasUsed * priceAtTxTime)}</Td>
+              <Td isNumeric>{checkedCurrentPrice? (gasUsed * currentPrice) : (gasUsed * ethPriceAtTxTime)}</Td>
 
               <Td isNumeric>
                 {
@@ -286,9 +364,9 @@ const Transactions = (props) => {
                   pad: true,
                 })) : (ethers.utils.formatEther((tx.value * currentPrice).toString(), {
                   pad: true,
-                }))) : ((walletAddress !== tx.to_address)?(ethers.utils.formatEther((tx.value * (-1) * priceAtTxTime).toString(), {
+                }))) : ((walletAddress !== tx.to_address)?(ethers.utils.formatEther((tx.value * (-1) * ethPriceAtTxTime).toString(), {
                   pad: true,
-                })) : (ethers.utils.formatEther((tx.value * priceAtTxTime).toString(), {
+                })) : (ethers.utils.formatEther((tx.value * ethPriceAtTxTime).toString(), {
                   pad: true,
                 })))}
               </Td>
@@ -296,24 +374,31 @@ const Transactions = (props) => {
 
               <Td isNumeric>
                 {
-                  ((walletAddress !== (tx.tokentoAddress!==undefined?tx.tokentoAddress:''))?(ethers.utils.formatEther(new BN(tx.tokenValue,18).toString()) * (-1))
+                  (walletAddress !== (tx.tokentoAddress!==undefined?tx.tokentoAddress:''))?(ethers.utils.formatUnits(new BN(tx.tokenValue).toString(),tx.metadata!==undefined?tx.metadata.decimals:18) * (-1))
                 : 
-                (ethers.utils.formatEther(new BN(tx.tokenValue,18).toString())))
+                (ethers.utils.formatUnits(new BN(tx.tokenValue).toString(),tx.metadata!==undefined?tx.metadata.decimals:18))
                 }
-                {tx.metadata!==undefined?tx.metadata.symbol:''}
+                &nbsp;{tx.metadata!==undefined?tx.metadata.symbol:''}
               </Td>
 
-              <Td isNumeric>
-                {checkedCurrentPrice ? ((walletAddress !== (tx.tokentoAddress!==undefined?tx.tokentoAddress:''))?(ethers.utils.formatEther(new BN((currentPrice * (-1)),18).mul(new BN(tx.tokenValue,18)).toString()))
+              <Td>{
+                checkedCurrentPrice ?
+                ((walletAddress !== (tx.tokentoAddress!==undefined?tx.tokentoAddress:''))
+                ?
+                (ethers.utils.formatUnits((newTokenPrice * newTokenValue * (-1)).toString(),tx.metadata!==undefined?tx.metadata.decimals:18))
                 : 
-                (ethers.utils.formatEther(new BN(currentPrice,18).mul(new BN(tx.tokenValue,18)).toString())))
+                (ethers.utils.formatUnits((newTokenPrice * newTokenValue).toString(),tx.metadata!==undefined?tx.metadata.decimals:18)))
 
-                 :  
+                :
 
-                ((walletAddress !== (tx.tokentoAddress!==undefined?tx.tokentoAddress:''))?(ethers.utils.formatEther(new BN((priceAtTxTime * (-1)),18).mul(new BN(tx.tokenValue,18)).toString())) 
+                ((walletAddress !== (tx.tokentoAddress!==undefined?tx.tokentoAddress:''))
+                ?
+                (ethers.utils.formatUnits((newTokenPriceAtTxTime * newTokenValue * (-1)).toString(),tx.metadata!==undefined?tx.metadata.decimals:18))
                 : 
-                (ethers.utils.formatEther(new BN(priceAtTxTime,18).mul(new BN(tx.tokenValue,18)).toString())))}
-              </Td>
+                (ethers.utils.formatUnits((newTokenPriceAtTxTime * newTokenValue).toString(),tx.metadata!==undefined?tx.metadata.decimals:18)))
+                
+              }</Td>
+
             </Tr>
           );
           ourTotalGasUsed = ourTotalGasUsed.add(new BN(tx.receipt_gas_used));
