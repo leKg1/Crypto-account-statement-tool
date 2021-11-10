@@ -1,23 +1,8 @@
 import React,{useState,useEffect} from 'react';
-
-import { Input,InputGroup,Heading,Button,
-    Link,
-    Table,
-    Thead,
-    Tbody,
-    Tfoot,
-    Tr,
-    Th,
-    Td,
-    TableCaption,
-    Stack,
-    Editable, EditableInput, EditablePreview,
-    Checkbox, CheckboxGroup 
-   } from "@chakra-ui/react"
-  
-  import Moralis from "moralis";
-  import { ethers } from "ethers";
-  import _ from "lodash";
+import { Input,InputGroup,Heading,Button,Link,Table,Label,Thead,Tbody,Tfoot,Tr,Th,Td,TableCaption,Stack,Editable, EditableInput, EditablePreview,Checkbox, CheckboxGroup } from "@chakra-ui/react"
+import Moralis from "moralis";
+import { ethers } from "ethers";
+import _ from "lodash";
 //   import { observer, Observer } from "mobx-react-lite"
 //   import { usePolygonTransactions } from './polygonStore';
 //   import { useEthTransactions } from './ethereumTransactionsStore';
@@ -35,56 +20,12 @@ import { Input,InputGroup,Heading,Button,
   } from "@ajna/pagination";
   import { useMoralis } from "react-moralis";
   import { getTokenPrice } from "../getTokenPrice";
+  import { fetchTokenTransfers } from "../utils/fetchTokenTransfers";
+  import { fetchTokenMetadata } from "../utils/fetchTokenMetadata";
+  import { fetchTransactions } from "../utils/fetchTransactions";
+
   const BN = require('bn.js');
   const API_KEY = `${process.env.REACT_APP_API_KEY}`;
-  
-  const fetchTransactions = async (address,pageSize,offset,chain) => {
-    if(address === undefined || address.length === 0)return
-    const requestOptions = {
-        method: 'GET',
-        headers: { 'accept': 'application/json', 'X-API-Key' : API_KEY },
-      };
-    const res = await fetch(`https://deep-index.moralis.io/api/v2/${address}?chain=${chain}&offset=${offset}&limit=${pageSize}`, requestOptions)
-    const transactions = await res.json()
-    console.log("Transactions",transactions)
-    return transactions
-  }
-  
-  const fetchTokenMetadata = async (address,chain) => {
-    if (address === undefined || address.length === 0) return;
-    const requestOptions = {
-      method: "GET",
-      headers: { accept: "application/json", "X-API-Key": API_KEY },
-    };
-    const metaResponse = await fetch(
-      `https://deep-index.moralis.io/api/v2/erc20/metadata?chain=${chain}&addresses=${address}`,
-      requestOptions
-    );
-    const metadata = await metaResponse.json()
-    if(metadata !== undefined || metadata.length !== 0) return metadata[0]
-
-    return undefined;
-  }
-
-  // const fetchTokenTransfers = async (address,pageSize,offset,chain) => {
-  const fetchTokenTransfers = async (address,chain) => {
-    let erc20TokenTransferMap = new Map();
-    if (address === undefined || address.length === 0) return;
-    
-    const requestOptions = {
-      method: "GET",
-      headers: { accept: "application/json", "X-API-Key": API_KEY },
-    };
-
-    // const res = await fetch(`https://deep-index.moralis.io/api/v2/${address}/erc20/transfers?chain=${chain}&offset=${offset}&limit=${pageSize}`, requestOptions)
-    const res = await fetch(`https://deep-index.moralis.io/api/v2/${address}/erc20/transfers?chain=${chain}`, requestOptions)
-    const tokenTransfers = await res.json()
-    for (let index = 0; index < tokenTransfers.result.length; index++) {
-            const erc20Transfer = tokenTransfers.result[index];
-            erc20TokenTransferMap.set(erc20Transfer.transaction_hash, erc20Transfer)
-    }
-    return erc20TokenTransferMap;
-  }
 
 const Transactions = (props) => {
     const [walletAddress, setWalletAddress] = useState("");
@@ -96,10 +37,11 @@ const Transactions = (props) => {
     const [totalGas, setTotalGas] = useState(0);
     const [toUsdPrice, setToUsdPrice] = useState(0);
     const [transactionsRows, setTransactionsRows] = useState([]);
-    const { isInitialized} = useMoralis();
+    const {isInitialized} = useMoralis();
     const [checkedCurrentPrice, setCheckedCurrentPrice] = useState(false);
     const [ourLocalMoralisAddresses, setOurLocalMoralisAddresses] = useState([]);
     const [isAddressBookChanged, setIsAddressBookChanged] = useState(false);
+
     const {
         currentPage,
         setCurrentPage,
@@ -116,19 +58,19 @@ const Transactions = (props) => {
           pageSize: 10, 
         },
       });
+
       const handlePageChange = (nextPage) => {
-        // -> request new data using the page number
         setCurrentPage(nextPage);
         console.log("request new data with ->", nextPage);
-
       };
     
-      const queryFromMoralis = async (txId) => {
+      const queryTxDetailsFromMoralis = async (txId) => {
         const queryTxDetails = new Moralis.Query("TxDetails");
         queryTxDetails.equalTo("txId", txId);
         const results = await queryTxDetails.find();  
         return results
       }
+
       const queryAddressBookFromMoralis = async (address) => {
         const queryAddressBook = new Moralis.Query("AddressBook");
         queryAddressBook.equalTo("address", address);
@@ -136,9 +78,9 @@ const Transactions = (props) => {
         return results
       }
     
-      const updateInMoralis = async (txId, description) => {
+      const updateDescriptionsInMoralis = async (txId, description) => {
         const TxDetails = Moralis.Object.extend("TxDetails");
-        const results = await queryFromMoralis(txId);
+        const results = await queryTxDetailsFromMoralis(txId);
         console.log("results",results)
         if (results.length !== 0) {
           const objectId = results[0].id;
@@ -155,7 +97,8 @@ const Transactions = (props) => {
             description: description,
           });
         }
-      };
+      }
+
       const updateAddressInMoralis = async (address, addressName) => {
         const AddressBook = Moralis.Object.extend("AddressBook");
         const results = await queryAddressBookFromMoralis(address);
@@ -176,64 +119,69 @@ const Transactions = (props) => {
           });
         }
       };
-    
+
+      //Read transaction details
       useEffect(() => {
+        (async () => {
         if (isInitialized) {
           const queryTxDetails = new Moralis.Query("TxDetails");
           let ourTxDetails = new Map();
-          queryTxDetails
-            .find()
-            .then((result) => {
+
+          queryTxDetails.find().then((result) => {
+
               for (let i = 0; i < result.length; i++) {
                 const eachResult = result[i];
                 ourTxDetails.set(eachResult.get("txId"), eachResult);
               }
+
               setOurLocalMoralisTxDetails(ourTxDetails);
               console.log("ourTxDetails ", ourTxDetails);
             })
             .catch((err) => console.log(err));
-
         }
+      })()
       }, [isInitialized,isAddressBookChanged])
 
+      //read compmlete addressbook one time when coming to the page
       useEffect(() => {
+        (async () => {
         if (isInitialized) {
           const queryAddressBook = new Moralis.Query("AddressBook");
           let addressMap = new Map();
-          queryAddressBook
-            .find()
-            .then((result) => {
+          const result = await queryAddressBook.find()
+
               for (let i = 0; i < result.length; i++) {
                 const eachResult = result[i];
-                addressMap.set(eachResult.get("address"), eachResult);
+                addressMap.set(eachResult.get("address"), eachResult.attributes.addressName);
               }
               setOurLocalMoralisAddresses(addressMap)
               console.log("addressMap ", addressMap);
-            })
-            .catch((err) => console.log(err));
         }
+      })()
       }, [isInitialized,isAddressBookChanged])
+      // }, [isInitialized])
     
-      useEffect(() => {    
-          fetchTransactions(walletAddress, pageSize, offset, props.chain)
-            .then((jsonRes) => {
-              if(jsonRes !== undefined){
+      //get all Transactions and TokenTransfers of an address and a chain, when coming to a page and navigating between pages (or changing address) 
+      //when all data is collected we call  getTransactionRows in order to produce table rows. which then get rendered.
+      useEffect(() => {
+        (async () => {
 
+          const jsonRes = await fetchTransactions(walletAddress, pageSize, offset, props.chain)
+              if(jsonRes !== undefined){
                 //call getERC20Transfers - return a list of transfer transactions. 
-                fetchTokenTransfers(walletAddress,props.chain)
-                .then((mapOfTokenTransfers) => {
+                const mapOfTokenTransfers = await fetchTokenTransfers(walletAddress,props.chain)
                   console.log("mapOfTokenTransfers",mapOfTokenTransfers)
                 //create Rows with the transactions
-                getTransactionsRows(jsonRes,mapOfTokenTransfers)
+                await getTransactionsRows(jsonRes,mapOfTokenTransfers)
                 setTxsTotal(jsonRes.total)
-              })
-              .catch((error) => console.error("App =>", error));
               } 
-            })
-            .catch((error) => console.error("App =>", error));
-        }, [currentPage, pageSize, offset, walletAddress, checkedCurrentPrice,isAddressBookChanged]);
+          })()
+            
+        }, [currentPage, pageSize, offset, walletAddress, ourLocalMoralisAddresses, isAddressBookChanged]);
     
-    
+      /**
+       * 
+       */
       const getTransactionsRows = async (jsonRes,mapOfTokenTransfers) => {
         const transactions = [];
         let gasUsed;
@@ -297,7 +245,7 @@ const Transactions = (props) => {
                 <EditablePreview />
                 <EditableInput
                   onBlur={async (e) => {
-                    await updateInMoralis(tx.hash, e.target.value);
+                    await updateDescriptionsInMoralis(tx.hash, e.target.value);
                     const newMap = ourLocalMoralisTxDetails;
                     newMap.set(tx.hash, e.target.value);
                     setOurLocalMoralisTxDetails(newMap);
@@ -310,9 +258,12 @@ const Transactions = (props) => {
               <Td><Editable
               defaultValue={
                 ourLocalMoralisAddresses.get(tx.from_address) !== undefined
-                  ? ourLocalMoralisAddresses.get(tx.from_address).attributes.addressName
+                  ? ourLocalMoralisAddresses.get(tx.from_address)
                   : tx.from_address
               }
+              key={ourLocalMoralisAddresses.get(tx.from_address) !== undefined
+                ? ourLocalMoralisAddresses.get(tx.from_address)
+                : tx.from_address}
             >
               <EditablePreview />
               <EditableInput
@@ -320,7 +271,7 @@ const Transactions = (props) => {
                   await updateAddressInMoralis(tx.from_address, e.target.value);
                   const newMap = ourLocalMoralisAddresses;
                   newMap.set(tx.from_address, e.target.value);
-                  setOurLocalMoralisAddresses(newMap);
+                  setOurLocalMoralisAddresses(newMap); //when changing the local state with a new map useEffect should re-render which reads the transactions
                   setIsAddressBookChanged(!isAddressBookChanged)
                 }}
               />
@@ -328,11 +279,14 @@ const Transactions = (props) => {
 
             {/*<Td>{tx.to_address}</Td>*/}
             <Td><Editable
-              defaultValue={
+            defaultValue={
                 ourLocalMoralisAddresses.get(tx.to_address) !== undefined
-                  ? ourLocalMoralisAddresses.get(tx.to_address).attributes.addressName
+                  ? ourLocalMoralisAddresses.get(tx.to_address)
                   : tx.to_address
               }
+              key={ourLocalMoralisAddresses.get(tx.to_address) !== undefined
+                ? ourLocalMoralisAddresses.get(tx.to_address)
+                : tx.to_address}
             >
               <EditablePreview />
               <EditableInput
@@ -402,10 +356,7 @@ const Transactions = (props) => {
             </Tr>
           );
           ourTotalGasUsed = ourTotalGasUsed.add(new BN(tx.receipt_gas_used));
-        // }
-        // }
-      }
-        // );
+      }//for each tx
     
         setTotalGas(ourTotalGasUsed.toString(10));
         setTransactionsRows(transactions);
@@ -503,6 +454,7 @@ return (
         placeholder="Enter token address"
       />
     </InputGroup>
+    {isAddressBookChanged?"AddressBook changed":"no change"} 
     <br></br>
     <br></br>
     <Stack ml="1%">
